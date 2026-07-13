@@ -239,6 +239,131 @@ class HostnameResolveTool(Tool):
 
 
 @tool
+class WebSearchTool(Tool):
+    name = "web_search"
+    description = "Searches the internet via DuckDuckGo and returns results"
+    aliases = ("search web", "internet search", "google")
+    intents = {
+        "search web": 5,
+        "search internet": 5,
+        "web search": 5,
+        "search online": 5,
+        "google": 4,
+        "look up online": 4,
+        "search for": 3,
+    }
+
+    def __init__(self) -> None:
+        self._service = ShellService()
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        import re as _re
+
+        query = kwargs.get("query", kwargs.get("message", ""))
+        if not query:
+            return ToolResult(success=False, message="No search query provided.")
+
+        escaped = query.replace("'", "'\\''")
+        cmd = (
+            f"curl -s -A 'Mozilla/5.0' "
+            f"'https://lite.duckduckgo.com/lite/?q={escaped}'"
+        )
+        result = await self._service.execute(cmd)
+        if not result.success:
+            return ToolResult(success=False, message=result.stderr or "Search request failed.")
+
+        html = result.stdout
+        # Extract result snippets from DuckDuckGo lite
+        links = _re.findall(r'<a[^>]+rel="nofollow"[^>]+href="([^"]+)"[^>]*>\s*([^<]*)</a>', html)
+        snippets = _re.findall(r'<td[^>]*class="result-snippet"[^>]*>(.*?)</td>', html, re.DOTALL)
+
+        if not links and not snippets:
+            # Fallback: try simpler pattern
+            links = _re.findall(r'href="(https?://[^"]+)"[^>]*>([^<]+)</a>', html)
+
+        lines: list[str] = []
+        seen: set[str] = set()
+        for i, (url, title) in enumerate(links[:8]):
+            url = url.strip()
+            title = title.strip()
+            if not url or not title or url in seen:
+                continue
+            if url.startswith("/"):
+                continue
+            seen.add(url)
+            snippet = ""
+            if i < len(snippets):
+                snippet = _re.sub(r"<[^>]+>", "", snippets[i]).strip()
+            entry = f"{len(lines)+1}. {title}\n   {url}"
+            if snippet:
+                entry += f"\n   {snippet}"
+            lines.append(entry)
+
+        if not lines:
+            return ToolResult(
+                success=True,
+                message=f"No results found for: {query}",
+            )
+
+        return ToolResult(
+            success=True,
+            message=f"Search results for: {query}\n\n" + "\n\n".join(lines),
+        )
+
+
+@tool
+class WebFetchTool(Tool):
+    name = "web_fetch"
+    description = "Fetches a URL and returns clean text content"
+    aliases = ("fetch page", "read url", "scrape")
+    intents = {
+        "fetch page": 5,
+        "read url": 5,
+        "scrape": 5,
+        "get page content": 5,
+        "open url": 4,
+        "read website": 4,
+    }
+
+    def __init__(self) -> None:
+        self._service = ShellService()
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        import re as _re
+
+        url = kwargs.get("url", "")
+        if not url:
+            return ToolResult(success=False, message="No URL provided.")
+
+        cmd = (
+            f"curl -s -L -A 'Mozilla/5.0' --max-time 15 "
+            f"--max-filesize 1048576 '{url}'"
+        )
+        result = await self._service.execute(cmd)
+        if not result.success:
+            return ToolResult(success=False, message=result.stderr or "Failed to fetch URL.")
+
+        html = result.stdout
+        # Strip script/style tags
+        html = _re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
+        # Strip HTML tags
+        text = _re.sub(r"<[^>]+>", " ", html)
+        # Collapse whitespace
+        text = _re.sub(r"\s+", " ", text).strip()
+        # Limit output
+        if len(text) > 4000:
+            text = text[:4000] + "\n... (truncated)"
+
+        if not text:
+            return ToolResult(success=True, message="Page returned empty content.")
+
+        return ToolResult(
+            success=True,
+            message=f"Content from {url}:\n\n{text}",
+        )
+
+
+@tool
 class CWhoisTool(Tool):
     name = "whois"
     description = "Looks up domain whois"

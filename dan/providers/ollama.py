@@ -89,10 +89,10 @@ class OllamaProvider(Provider):
             "model": self._model_name,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "stream": False,
+            "think": False,
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
-                "think": False,
             },
         }
 
@@ -134,10 +134,10 @@ class OllamaProvider(Provider):
             "model": self._model_name,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "stream": True,
+            "think": False,
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
-                "think": False,
             },
         }
 

@@ -72,6 +72,11 @@ class DANConfig:
             name="ollama", model="dan-reason"
         )
     )
+    persona: ProviderConfig = field(
+        default_factory=lambda: ProviderConfig(
+            name="ollama", model="dan-persona"
+        )
+    )
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     skills: SkillsConfig = field(default_factory=SkillsConfig)
 
@@ -118,6 +123,11 @@ class DANConfig:
                 **_filter_fields(ProviderConfig, data["reason"])
             )
 
+        if "persona" in data:
+            config.persona = ProviderConfig(
+                **_filter_fields(ProviderConfig, data["persona"])
+            )
+
         if "memory" in data:
             config.memory = MemoryConfig(
                 **_filter_fields(MemoryConfig, data["memory"])
@@ -152,6 +162,12 @@ class DANConfig:
                 "model": self.reason.model,
                 "device": self.reason.device,
                 "quantization": self.reason.quantization,
+            },
+            "persona": {
+                "name": self.persona.name,
+                "model": self.persona.model,
+                "device": self.persona.device,
+                "quantization": self.persona.quantization,
             },
             "memory": {
                 "short_term_limit": self.memory.short_term_limit,

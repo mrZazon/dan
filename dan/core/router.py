@@ -37,7 +37,7 @@ class Layer(enum.IntEnum):
     REFLEX = 0
     INTERPRET = 1
     REASON = 2
-    LEARN = 3
+    PERSONA = 3
 
 
 @dataclass
@@ -49,6 +49,8 @@ class Route:
     skill_name: str | None = None
     raw_response: str = ""
     steps: list[dict[str, Any]] = field(default_factory=list)
+    needs_stream: bool = False
+    stream_messages: list[Any] = field(default_factory=list)
 
 
 class Router:
@@ -56,8 +58,8 @@ class Router:
 
     L0 (Reflex): Skills + greeting detection. Zero LLM cost.
     L1 (Interpret): Small LLM extracts intent and arguments.
-    L2 (Reason): Large LLM for complex multi-step requests.
-    L3 (Learn): Compress successful plans into skills.
+    L2 (Reason): Large LLM for tool selection (JSON-only).
+    L3 (Persona): Personality layer for user-facing responses.
     """
 
     def __init__(
@@ -68,6 +70,7 @@ class Router:
         bus: EventBus | None = None,
         interpret_provider: Provider | None = None,
         reason_provider: Provider | None = None,
+        persona_provider: Provider | None = None,
         threshold: float = 1.0,
         session: SessionMemory | None = None,
     ) -> None:
@@ -77,6 +80,7 @@ class Router:
         self.bus = bus
         self.interpret_provider = interpret_provider
         self.reason_provider = reason_provider
+        self.persona_provider = persona_provider
         self.threshold = threshold
         self.session = session
 
@@ -87,7 +91,7 @@ class Router:
             if skill:
                 logger.debug("L0 skill match: %s", skill.name)
                 return Route(
-                    layer=Layer.LEARN,
+                    layer=Layer.REFLEX,
                     confidence=1.0,
                     skill_name=skill.name,
                     args={"message": message},
@@ -114,6 +118,7 @@ class Router:
                     logger.debug("L1 interpret: %s", result.tool_name)
                     return result
                 logger.debug("L1 rejected: no tool for '%s'", message)
+                result.needs_stream = True
                 return result
 
         # L2: Reason — only when L1 failed to parse or is unavailable
@@ -123,13 +128,112 @@ class Router:
                 logger.debug("L2 reason: %s (steps=%d)", route.tool_name or "none", len(route.steps))
                 return route
 
-        # No layer
+        # L3: Persona — conversation fallback (no tool needed)
+        if self.persona_provider and await self.persona_provider.health_check():
+            persona_response = await self._persona(message)
+            if persona_response:
+                logger.debug("L3 persona response")
+                return Route(
+                    layer=Layer.PERSONA,
+                    confidence=1.0,
+                    raw_response=persona_response,
+                    args={"message": message},
+                )
+
+        # No layer — fall through to streaming chat
         logger.debug("No layer could handle: %s", message)
         return Route(
             layer=Layer.REFLEX,
             confidence=0.0,
+            needs_stream=True,
             args={"message": message},
         )
+
+    async def route_agentic(self, message: str, max_steps: int = 5) -> list[dict[str, Any]]:
+        """Agentic loop: plan → execute → read → repeat.
+
+        Returns a list of steps taken:
+        [{"type": "thought", "text": "..."}, {"type": "tool", "name": "...", "args": {...}, "result": "..."}, ...]
+        """
+        from dan.providers.base import ProviderMessage
+
+        if not self.reason_provider or not await self.reason_provider.health_check():
+            return []
+
+        ctx = self._session_context()
+        content = message
+        if ctx:
+            content = f"{ctx}\n\nUser: {message}"
+
+        categories = self._tool_categories()
+        steps_log: list[dict[str, Any]] = []
+        conversation = [
+            ProviderMessage(role="user", content=categories + "\n\nUser: " + content),
+        ]
+
+        for step_num in range(max_steps):
+            try:
+                response = await self.reason_provider.complete(
+                    conversation, temperature=0.1, max_tokens=256
+                )
+                text = response.text.strip()
+                logger.debug("Agentic step %d: %s", step_num, text)
+
+                data = self._extract_json(text)
+
+                if data is None:
+                    steps_log.append({"type": "response", "text": text})
+                    break
+
+                tool_name = data.get("tool")
+                tool_args = data.get("args", {})
+
+                # L2 says no tool needed → hand off to L3 persona
+                if tool_name is None:
+                    persona_text = await self._persona(message, steps_log)
+                    steps_log.append({"type": "response", "text": persona_text or ""})
+                    break
+
+                # If tool doesn't exist, hand off to L3
+                if tool_name not in self.registry:
+                    persona_text = await self._persona(message, steps_log)
+                    steps_log.append({"type": "response", "text": persona_text or ""})
+                    break
+
+                # Execute the tool
+                tool_args["message"] = message
+                steps_log.append({"type": "tool", "name": tool_name, "args": tool_args})
+
+                tool_class = self.registry.get(tool_name)
+                tool_instance = tool_class()
+                tool_result = await tool_instance.execute(**tool_args)
+
+                steps_log[-1]["result"] = tool_result.message
+
+                # Feed result back to L2 for next decision
+                conversation.append(
+                    ProviderMessage(role="assistant", content=text)
+                )
+                conversation.append(
+                    ProviderMessage(
+                        role="user",
+                        content=(
+                            f"Tool result: {tool_result.message}\n\n"
+                            'Decide: call another tool or output {"tool": null}.'
+                        ),
+                    )
+                )
+
+            except Exception:
+                logger.exception("Agentic step %d failed", step_num)
+                break
+
+        # If loop ended without a response, use L3 persona
+        if steps_log and steps_log[-1].get("type") != "response":
+            persona_text = await self._persona(message, steps_log)
+            steps_log.append({"type": "response", "text": persona_text or ""})
+
+        return steps_log
 
     def _tool_names(self) -> str:
         """Just tool names, one per line — minimal context for L1."""
@@ -177,10 +281,14 @@ class Router:
 
         try:
             response = await self.interpret_provider.complete(
-                messages, temperature=0.1, max_tokens=256
+                messages, temperature=0.1, max_tokens=512
             )
             logger.debug("L1 raw response: %r", response.text)
-            return self._parse_interpretation(response.text, message)
+            route = self._parse_interpretation(response.text, message)
+            if route is not None:
+                route.stream_messages = messages
+                return route
+            return None
         except Exception:
             logger.exception("L1 interpretation failed")
             return None
@@ -200,7 +308,7 @@ class Router:
 
         try:
             response = await self.reason_provider.complete(
-                messages, temperature=0.2, max_tokens=256
+                messages, temperature=0.1, max_tokens=256
             )
             route = self._parse_reasoning(response.text, message)
             if route is not None:
@@ -211,12 +319,56 @@ class Router:
                 return Route(
                     layer=Layer.REASON,
                     confidence=0.0,
-                    raw_response=text,
+                    needs_stream=True,
+                    stream_messages=messages,
                     args={"message": message},
                 )
             return None
         except Exception:
             logger.exception("L2 reasoning failed")
+            return None
+
+    async def _persona(
+        self, message: str, steps_log: list[dict[str, Any]] | None = None
+    ) -> str | None:
+        """L3 persona: generate a personality-driven response.
+
+        If steps_log has tool results, format them for the persona model.
+        Otherwise, it's a pure conversation request.
+        """
+        if not self.persona_provider:
+            return None
+
+        from dan.providers.base import ProviderMessage
+
+        if steps_log:
+            # Build tool result context
+            tool_lines = []
+            for step in steps_log:
+                if step.get("type") == "tool":
+                    tool_lines.append(
+                        f'Tool: "{step["name"]}"\n'
+                        f'Result: "{step.get("result", "")}"'
+                    )
+            tool_context = "\n\n".join(tool_lines)
+            prompt = (
+                f"[TOOL RESULT]\n"
+                f'User asked: "{message}"\n'
+                f"{tool_context}\n"
+                f"[END]"
+            )
+        else:
+            prompt = f'[CONVERSATION]\nUser: "{message}"\n[END]'
+
+        messages = [ProviderMessage(role="user", content=prompt)]
+
+        try:
+            response = await self.persona_provider.complete(
+                messages, temperature=0.5, max_tokens=256
+            )
+            return response.text.strip() or None
+        except Exception:
+            logger.exception("L3 persona failed")
             return None
 
     def _parse_interpretation(self, text: str, original: str) -> Route | None:

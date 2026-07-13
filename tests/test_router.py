@@ -20,13 +20,13 @@ class TestRoute:
 
 class TestLayer:
     def test_ordering(self):
-        assert Layer.REFLEX < Layer.INTERPRET < Layer.REASON < Layer.LEARN
+        assert Layer.REFLEX < Layer.INTERPRET < Layer.REASON < Layer.PERSONA
 
     def test_values(self):
         assert Layer.REFLEX == 0
         assert Layer.INTERPRET == 1
         assert Layer.REASON == 2
-        assert Layer.LEARN == 3
+        assert Layer.PERSONA == 3
 
 
 class TestRouter:
@@ -55,7 +55,7 @@ class TestRouter:
         )
         import asyncio
         route = asyncio.run(router.route("echo hello world"))
-        assert route.layer == Layer.LEARN
+        assert route.layer == Layer.REFLEX
         assert route.skill_name == "echo_skill"
 
     def test_l0_no_match_below_threshold(self, registry):
