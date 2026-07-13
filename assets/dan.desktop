@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=D.A.N.
+Comment=Distributed Assistant Neural-network - Agentic Execution Framework
+Exec=dan-gui
+Icon=/home/harjots/proyectos/dan/icon/icon-dark.png
+Terminal=false
+Type=Application
+Categories=Utility;AI;Assistant;
+StartupNotify=true

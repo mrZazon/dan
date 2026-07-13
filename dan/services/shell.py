@@ -81,7 +81,7 @@ class ShellService(Service):
                 command=command,
                 stdout=stdout.decode().strip(),
                 stderr=stderr.decode().strip(),
-                returncode=process.returncode or -1,
+                returncode=process.returncode if process.returncode is not None else -1,
             )
 
             if result.success:

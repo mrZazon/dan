@@ -31,7 +31,7 @@ class CurrentDateTool(Tool):
         self._service = ShellService()
 
     async def execute(self, **kwargs: Any) -> ToolResult:
-        result = await self._service.execute('date +"%Y-%m-%d"')
+        result = await self._service.execute('date +"%d/%m/%Y"')
         return ToolResult(success=result.success, message=result.stdout or result.stderr, data={"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode})
 
 
@@ -46,7 +46,7 @@ class DateTimeTool(Tool):
         self._service = ShellService()
 
     async def execute(self, **kwargs: Any) -> ToolResult:
-        result = await self._service.execute('date +"%Y-%m-%d %H:%M:%S %Z"')
+        result = await self._service.execute('date +"%d/%m/%Y %H:%M:%S %Z"')
         return ToolResult(success=result.success, message=result.stdout or result.stderr, data={"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode})
 
 
@@ -137,7 +137,7 @@ class EpochConvertTool(Tool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         timestamp = kwargs.get("timestamp", "")
-        result = await self._service.execute(f'date -d @{timestamp} +"%Y-%m-%d %H:%M:%S %Z"')
+        result = await self._service.execute(f'date -d @{timestamp} +"%d/%m/%Y %H:%M:%S %Z"')
         return ToolResult(success=result.success, message=result.stdout or result.stderr, data={"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode})
 
 

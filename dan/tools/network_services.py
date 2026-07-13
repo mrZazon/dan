@@ -257,58 +257,41 @@ class WebSearchTool(Tool):
         self._service = ShellService()
 
     async def execute(self, **kwargs: Any) -> ToolResult:
-        import re as _re
-
         query = kwargs.get("query", kwargs.get("message", ""))
         if not query:
             return ToolResult(success=False, message="No search query provided.")
 
-        escaped = query.replace("'", "'\\''")
-        cmd = (
-            f"curl -s -A 'Mozilla/5.0' "
-            f"'https://lite.duckduckgo.com/lite/?q={escaped}'"
-        )
-        result = await self._service.execute(cmd)
-        if not result.success:
-            return ToolResult(success=False, message=result.stderr or "Search request failed.")
+        try:
+            from ddgs import DDGS
 
-        html = result.stdout
-        # Extract result snippets from DuckDuckGo lite
-        links = _re.findall(r'<a[^>]+rel="nofollow"[^>]+href="([^"]+)"[^>]*>\s*([^<]*)</a>', html)
-        snippets = _re.findall(r'<td[^>]*class="result-snippet"[^>]*>(.*?)</td>', html, re.DOTALL)
+            # Try news first for news-like queries
+            news_keywords = {"news", "stock", "market", "finance", "weather", "score"}
+            is_news = any(kw in query.lower() for kw in news_keywords)
 
-        if not links and not snippets:
-            # Fallback: try simpler pattern
-            links = _re.findall(r'href="(https?://[^"]+)"[^>]*>([^<]+)</a>', html)
+            if is_news:
+                results = DDGS().news(query, max_results=8)
+            else:
+                results = DDGS().text(query, max_results=8)
 
-        lines: list[str] = []
-        seen: set[str] = set()
-        for i, (url, title) in enumerate(links[:8]):
-            url = url.strip()
-            title = title.strip()
-            if not url or not title or url in seen:
-                continue
-            if url.startswith("/"):
-                continue
-            seen.add(url)
-            snippet = ""
-            if i < len(snippets):
-                snippet = _re.sub(r"<[^>]+>", "", snippets[i]).strip()
-            entry = f"{len(lines)+1}. {title}\n   {url}"
-            if snippet:
-                entry += f"\n   {snippet}"
-            lines.append(entry)
+            if not results:
+                return ToolResult(success=True, message=f"No results found for: {query}")
 
-        if not lines:
+            lines: list[str] = []
+            for i, r in enumerate(results, 1):
+                title = r.get("title", "")
+                url = r.get("url", r.get("href", r.get("link", "")))
+                snippet = r.get("body", r.get("snippet", ""))
+                entry = f"{i}. {title}\n   {url}"
+                if snippet:
+                    entry += f"\n   {snippet}"
+                lines.append(entry)
+
             return ToolResult(
                 success=True,
-                message=f"No results found for: {query}",
+                message=f"Search results for: {query}\n\n" + "\n\n".join(lines),
             )
-
-        return ToolResult(
-            success=True,
-            message=f"Search results for: {query}\n\n" + "\n\n".join(lines),
-        )
+        except Exception as e:
+            return ToolResult(success=False, message=f"Search failed: {e}")
 
 
 @tool

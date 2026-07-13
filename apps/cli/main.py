@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
+import struct
 import sys
-import time
 from pathlib import Path
 
 from rich.console import Console
@@ -29,7 +30,7 @@ from rich.theme import Theme
 
 from dan.core.config import DANConfig
 from dan.core.tool_registry import ToolRegistry
-from dan.core.router import Router, Layer
+from dan.core.router import Router
 from dan.core.safety import check_command_safety, get_tool_danger_level, DANGEROUS, CAUTION
 from dan.memory.session import SessionMemory
 from dan.plugins.registry import PluginRegistry
@@ -51,6 +52,13 @@ DAN_THEME = Theme({
 
 console = Console(theme=DAN_THEME)
 logger = logging.getLogger("dan")
+
+# Shared across interactive and API mode
+_AGENTIC_KEYWORDS = {
+    "what should i", "plan my", "organize", "daily", "today", "what do i have",
+    "what's on", "what am i doing", "my schedule", "what's my routine",
+    "what do i usually", "good morning", "briefing", "start my day", "what's today",
+}
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -104,6 +112,180 @@ def _extract_command_from_args(tool_name: str, args: dict) -> str | None:
     return None
 
 
+async def cmd_serve(args: argparse.Namespace, config: DANConfig) -> None:
+    """Start a TCP API server for external clients (GUI)."""
+    import json
+    import struct
+
+    registry = ToolRegistry()
+    registry.discover()
+    skill_registry = SkillRegistry()
+    session = SessionMemory()
+
+    with console.status("[bold green]Loading models...", spinner="dots"):
+        interpret = OllamaProvider()
+        reason = OllamaProvider()
+        persona = OllamaProvider()
+        await interpret.load_model(config.interpret.model)
+        await reason.load_model(config.reason.model)
+        await persona.load_model(config.persona.model)
+
+    router = Router(
+        registry=registry,
+        skill_registry=skill_registry,
+        interpret_provider=interpret,
+        reason_provider=reason,
+        persona_provider=persona,
+        threshold=config.core.threshold,
+        session=session,
+    )
+
+    host = args.host
+    port = args.port
+    console.print(f"[info]API server on {host}:{port}[/info]")
+
+    async def handle_client(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        remote = writer.get_extra_info("peername", "unknown")
+        logger.info("Client connected: %s", remote)
+        try:
+            while True:
+                header = await reader.readexactly(4)
+                payload_len = struct.unpack("!I", header)[0]
+                raw = await reader.readexactly(payload_len)
+                req = json.loads(raw)
+
+                msg = req.get("message", "")
+                if not msg:
+                    await _write_json(writer, {"error": "empty message"})
+                    continue
+
+                session.add_user(msg)
+
+                use_agentic = any(kw in msg.lower() for kw in _AGENTIC_KEYWORDS)
+                result: dict = {}
+
+                try:
+                    if use_agentic:
+                        steps_log = await router.route_agentic(msg, max_steps=5)
+                        steps = []
+                        for step in steps_log:
+                            if step["type"] == "tool":
+                                steps.append({"type": "tool", "name": step["name"], "result": step.get("result", "")})
+                            elif step["type"] == "response":
+                                result["text"] = step.get("text", "")
+                        if steps:
+                            result["steps"] = steps
+                    else:
+                        route = await router.route(msg)
+
+                        if route.tool_name:
+                            steps = route.steps or [{"tool": route.tool_name, "args": route.args}]
+                            tool_results = []
+                            tool_steps_log = []
+
+                            for step in steps:
+                                tool_name = step["tool"]
+                                tool_args = step["args"]
+
+                                danger = get_tool_danger_level(tool_name)
+                                if danger in (DANGEROUS, CAUTION):
+                                    tool_results.append({
+                                        "type": "confirm",
+                                        "message": f"{danger.upper()}: {tool_name}",
+                                        "tool": tool_name,
+                                        "args": tool_args,
+                                    })
+                                    continue
+
+                                if tool_name == "command":
+                                    cmd_str = tool_args.get("command", "")
+                                    verdict = check_command_safety(cmd_str)
+                                    if not verdict.safe:
+                                        tool_results.append({
+                                            "type": "confirm",
+                                            "message": f"DESTRUCTIVE: {verdict.reason}\n{cmd_str}",
+                                            "tool": tool_name,
+                                            "cmd": cmd_str,
+                                        })
+                                        continue
+
+                                tool_class = registry.get(tool_name)
+                                if tool_class is None:
+                                    tool_results.append({"type": "error", "message": f"Unknown tool: {tool_name}"})
+                                    continue
+
+                                tool_instance = tool_class()
+                                trobj = await tool_instance.execute(**tool_args)
+                                tool_results.append({
+                                    "type": "tool",
+                                    "name": tool_name,
+                                    "result": trobj.message,
+                                })
+                                tool_steps_log.append({
+                                    "type": "tool", "name": tool_name,
+                                    "args": tool_args, "result": trobj.message,
+                                })
+
+                            if tool_steps_log:
+                                persona_text = await router._persona(msg, tool_steps_log)
+                                if persona_text:
+                                    result["text"] = persona_text
+                                    session.add_assistant(persona_text)
+                            if tool_results:
+                                result["results"] = tool_results
+
+                        elif route.skill_name:
+                            result["text"] = f"[skill] {route.skill_name}"
+
+                        elif route.needs_stream:
+                            prompt = f"[CONVERSATION]\nUser: \"{msg}\"\n[END]"
+                            msgs = [ProviderMessage(role="user", content=prompt)]
+                            parts = []
+                            try:
+                                async for chunk in persona.stream(
+                                    msgs, temperature=0.3, max_tokens=256,
+                                ):
+                                    parts.append(chunk)
+                            except Exception as e:
+                                result["error"] = str(e)
+                            full = "".join(parts).strip()
+                            if full:
+                                result["text"] = full
+                                session.add_assistant(full)
+
+                        elif route.raw_response:
+                            result["text"] = route.raw_response
+                            session.add_assistant(route.raw_response)
+
+                except Exception as e:
+                    logger.exception("Route error")
+                    result["error"] = str(e)
+
+                await _write_json(writer, result)
+
+        except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError):
+            logger.info("Client disconnected: %s", remote)
+        finally:
+            writer.close()
+
+    async def start_server() -> None:
+        server = await asyncio.start_server(handle_client, host, port)
+        async with server:
+            await server.serve_forever()
+
+    await start_server()
+
+
+async def _write_json(writer: asyncio.StreamWriter, data: dict) -> None:
+    raw = json.dumps(data).encode("utf-8")
+    writer.write(struct.pack("!I", len(raw)))
+    writer.write(raw)
+    await writer.drain()
+
+
 async def cmd_interact(args: argparse.Namespace, config: DANConfig) -> None:
     """Start interactive mode."""
     registry = ToolRegistry()
@@ -146,7 +328,13 @@ async def cmd_interact(args: argparse.Namespace, config: DANConfig) -> None:
 
     while True:
         try:
-            message = input("\033[1;36myou>\033[0m ").strip()
+            if sys.stdin.isatty():
+                raw = input("\033[1;36myou>\033[0m ")
+            else:
+                raw = sys.stdin.readline()
+            if not raw:
+                break
+            message = raw.strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[info]Goodbye![/info]")
             break
@@ -225,8 +413,20 @@ async def cmd_interact(args: argparse.Namespace, config: DANConfig) -> None:
                             tool_instance = tool_class()
                             tool_result = await tool_instance.execute(**tool_args)
 
-                        console.print(f"\033[1;32mdan>\033[0m {tool_result.message}")
-                        session.add_assistant(tool_result.message)
+                        # Route tool result through L3 persona
+                        tool_steps = [{"type": "tool", "name": tool_name, "args": tool_args, "result": tool_result.message}]
+                        persona_text = await router._persona(message, tool_steps)
+
+                        if persona_text:
+                            sys.stdout.write("\033[1;32mdan>\033[0m ")
+                            sys.stdout.flush()
+                            sys.stdout.write(persona_text)
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                            session.add_assistant(persona_text)
+                        else:
+                            console.print(f"\033[1;32mdan>\033[0m {tool_result.message}")
+                            session.add_assistant(tool_result.message)
 
                 elif route.skill_name:
                     console.print(f"[info]skill: {route.skill_name}[/info]")
@@ -354,6 +554,9 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("plugins", help="List loaded plugins")
     subparsers.add_parser("config", help="Show current configuration")
     subparsers.add_parser("version", help="Show version information")
+    serve_parser = subparsers.add_parser("serve", help="Start API server for GUI")
+    serve_parser.add_argument("--host", default="127.0.0.1", help="Bind address")
+    serve_parser.add_argument("--port", type=int, default=7979, help="Bind port")
 
     return parser.parse_args()
 
@@ -371,6 +574,7 @@ def main() -> None:
         "plugins": cmd_plugins,
         "config": cmd_config,
         "version": cmd_version,
+        "serve": cmd_serve,
     }
 
     if not args.command:

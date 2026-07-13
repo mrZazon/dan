@@ -107,7 +107,7 @@ class CalendarListTool(Tool):
         if not events:
             return ToolResult(success=True, message="No events scheduled.")
 
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%d/%m/%Y")
         filter_date = kwargs.get("date", today)
 
         filtered = [e for e in events if e.get("date") == filter_date]
@@ -382,7 +382,7 @@ class DailyBriefingTool(Tool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         now = datetime.now()
-        today = now.strftime("%Y-%m-%d")
+        today = now.strftime("%d/%m/%Y")
         day_name = now.strftime("%A")
         time_str = now.strftime("%H:%M")
 

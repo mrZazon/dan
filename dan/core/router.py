@@ -113,15 +113,11 @@ class Router:
         # L1: Interpret
         if self.interpret_provider and await self.interpret_provider.health_check():
             result = await self._interpret(message)
-            if result is not None:
-                if result.confidence >= self.threshold:
-                    logger.debug("L1 interpret: %s", result.tool_name)
-                    return result
-                logger.debug("L1 rejected: no tool for '%s'", message)
-                result.needs_stream = True
+            if result is not None and result.confidence >= self.threshold:
+                logger.debug("L1 interpret: %s", result.tool_name)
                 return result
 
-        # L2: Reason — only when L1 failed to parse or is unavailable
+        # L2: Reason — when L1 failed, found no tool, or is unavailable
         if self.reason_provider and await self.reason_provider.health_check():
             route = await self._reason(message)
             if route:
@@ -153,7 +149,7 @@ class Router:
         """Agentic loop: plan → execute → read → repeat.
 
         Returns a list of steps taken:
-        [{"type": "thought", "text": "..."}, {"type": "tool", "name": "...", "args": {...}, "result": "..."}, ...]
+        [{"type": "tool", "name": "...", "args": {...}, "result": "..."}, ...]
         """
         from dan.providers.base import ProviderMessage
 
@@ -182,22 +178,39 @@ class Router:
                 data = self._extract_json(text)
 
                 if data is None:
-                    steps_log.append({"type": "response", "text": text})
                     break
 
+                # Handle multi-step plan
+                plan = data.get("plan")
+                if plan and isinstance(plan, list):
+                    for plan_step in plan:
+                        if len(steps_log) >= max_steps:
+                            break
+                        tool_name = plan_step.get("tool")
+                        tool_args = plan_step.get("args", {})
+                        if not tool_name or tool_name not in self.registry:
+                            continue
+                        tool_args["message"] = message
+                        steps_log.append({"type": "tool", "name": tool_name, "args": tool_args})
+                        tool_class = self.registry.get(tool_name)
+                        tool_instance = tool_class()
+                        tool_result = await tool_instance.execute(**tool_args)
+                        steps_log[-1]["result"] = tool_result.message
+                        conversation.append(
+                            ProviderMessage(role="user", content=f"Step done. Result: {tool_result.message}")
+                        )
+                    break
+
+                # Handle single tool call
                 tool_name = data.get("tool")
                 tool_args = data.get("args", {})
 
-                # L2 says no tool needed → hand off to L3 persona
+                # No tool needed → hand off to L3 persona
                 if tool_name is None:
-                    persona_text = await self._persona(message, steps_log)
-                    steps_log.append({"type": "response", "text": persona_text or ""})
                     break
 
-                # If tool doesn't exist, hand off to L3
+                # Unknown tool → hand off to L3
                 if tool_name not in self.registry:
-                    persona_text = await self._persona(message, steps_log)
-                    steps_log.append({"type": "response", "text": persona_text or ""})
                     break
 
                 # Execute the tool
@@ -228,10 +241,9 @@ class Router:
                 logger.exception("Agentic step %d failed", step_num)
                 break
 
-        # If loop ended without a response, use L3 persona
-        if steps_log and steps_log[-1].get("type") != "response":
-            persona_text = await self._persona(message, steps_log)
-            steps_log.append({"type": "response", "text": persona_text or ""})
+        # Hand off to L3 persona for final response
+        persona_text = await self._persona(message, steps_log)
+        steps_log.append({"type": "response", "text": persona_text or ""})
 
         return steps_log
 
@@ -362,9 +374,11 @@ class Router:
 
         messages = [ProviderMessage(role="user", content=prompt)]
 
+        max_tok = 512 if steps_log else 256
+
         try:
             response = await self.persona_provider.complete(
-                messages, temperature=0.5, max_tokens=256
+                messages, temperature=0.3, max_tokens=max_tok
             )
             return response.text.strip() or None
         except Exception:
@@ -422,27 +436,62 @@ class Router:
             logger.warning("Failed to parse L2 response: %s", text)
             return None
 
-        steps = data.get("steps", [])
-        confidence = float(data.get("confidence", 0))
-
-        valid_steps: list[dict[str, Any]] = []
-        for step in steps:
-            tn = step.get("tool")
-            if tn and tn in self.registry:
-                step_args = step.get("args", {})
-                step_args["message"] = original
-                valid_steps.append({"tool": tn, "args": step_args})
-
-        if valid_steps:
-            first = valid_steps[0]
+        # Handle single tool call: {"tool": "...", "args": {...}}
+        tool_name = data.get("tool")
+        if tool_name is not None and tool_name in self.registry:
+            args = data.get("args", {})
+            args["message"] = original
             return Route(
                 layer=Layer.REASON,
-                tool_name=first["tool"],
-                confidence=confidence,
-                args=first["args"],
+                tool_name=tool_name,
+                confidence=1.0,
+                args=args,
                 raw_response=text,
-                steps=valid_steps,
             )
+
+        # Handle plan: {"plan": [{"tool": "...", "args": {...}}, ...]}
+        plan = data.get("plan")
+        if plan and isinstance(plan, list):
+            valid_steps: list[dict[str, Any]] = []
+            for step in plan:
+                tn = step.get("tool")
+                if tn and tn in self.registry:
+                    step_args = step.get("args", {})
+                    step_args["message"] = original
+                    valid_steps.append({"tool": tn, "args": step_args})
+            if valid_steps:
+                first = valid_steps[0]
+                return Route(
+                    layer=Layer.REASON,
+                    tool_name=first["tool"],
+                    confidence=1.0,
+                    args=first["args"],
+                    raw_response=text,
+                    steps=valid_steps,
+                )
+
+        # Handle legacy steps: {"steps": [...]}
+        steps = data.get("steps", [])
+        if steps:
+            valid_steps = []
+            for step in steps:
+                tn = step.get("tool")
+                if tn and tn in self.registry:
+                    step_args = step.get("args", {})
+                    step_args["message"] = original
+                    valid_steps.append({"tool": tn, "args": step_args})
+            if valid_steps:
+                first = valid_steps[0]
+                return Route(
+                    layer=Layer.REASON,
+                    tool_name=first["tool"],
+                    confidence=1.0,
+                    args=first["args"],
+                    raw_response=text,
+                    steps=valid_steps,
+                )
+
+        # {"tool": null} or unknown format → no match, fall through to L3
         return None
 
     @staticmethod
@@ -454,20 +503,39 @@ class Router:
         # Fix common qwen3 quirk: ) instead of }
         text = re.sub(r'"\s*\)\s*$', '"}', text)
 
+        # Strip thinking tags if present
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
 
+        # Try to extract the first valid JSON object
         start = text.find("{")
         if start == -1:
             return None
 
         depth = 0
+        in_string = False
+        escape = False
+
         for i in range(start, len(text)):
-            if text[i] == "{":
+            c = text[i]
+            if escape:
+                escape = False
+                continue
+            if c == "\\":
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == "{":
                 depth += 1
-            elif text[i] in ("}", ")"):
+            elif c in ("}", ")"):
                 depth -= 1
                 if depth == 0:
                     candidate = text[start : i + 1]
@@ -476,5 +544,13 @@ class Router:
                     try:
                         return json.loads(candidate)
                     except json.JSONDecodeError:
+                        # Try removing trailing garbage after last }
+                        last_brace = candidate.rfind("}")
+                        if last_brace > 0:
+                            trimmed = candidate[: last_brace + 1]
+                            try:
+                                return json.loads(trimmed)
+                            except json.JSONDecodeError:
+                                pass
                         return None
         return None
