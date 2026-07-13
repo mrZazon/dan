@@ -1,0 +1,17 @@
+[
+  {
+    "name": "echo_skill",
+    "description": "echo skill",
+    "intent": "echo",
+    "tool_name": "echo",
+    "args_template": {},
+    "examples": [
+      "echo this"
+    ],
+    "created_at": 1783955874.0864706,
+    "success_count": 0,
+    "failure_count": 0,
+    "avg_score": 0.0,
+    "metadata": {}
+  }
+]

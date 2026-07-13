@@ -22,14 +22,34 @@ class Tool(ABC):
     Base class for every D.A.N. capability.
     """
 
-    # Unique identifier
     name: str = ""
-
-    # Human-readable description
     description: str = ""
+    __dan_tool__: bool = False
 
-    # Optional aliases
     aliases: tuple[str, ...] = ()
+    intents: dict[str, float] = {}
+
+    @classmethod
+    def score(cls, message: str) -> float:
+        """
+        Calculate how well this tool matches a message.
+        """
+
+        message = message.lower()
+
+        score = 0.0
+
+        # Weak matches
+        for alias in cls.aliases:
+            if alias in message:
+                score += 1
+
+        # Strong matches
+        for phrase, points in cls.intents.items():
+            if phrase in message:
+                score += points
+
+        return score
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> ToolResult:

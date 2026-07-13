@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+*.whl
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Runtime
+runtime/cache/*
+runtime/logs/*
+runtime/models/*
+runtime/sessions/*
+runtime/tmp/*
+!runtime/cache/.gitkeep
+!runtime/logs/.gitkeep
+!runtime/models/.gitkeep
+!runtime/sessions/.gitkeep
+!runtime/tmp/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Models (large files)
+*.bin
+*.gguf
+*.safetensors

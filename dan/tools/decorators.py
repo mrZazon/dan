@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Type
+from typing import TYPE_CHECKING
 
-from dan.tools.base import Tool
+if TYPE_CHECKING:
+    from dan.tools.base import Tool
 
 
-def tool(cls: Type[Tool]) -> Type[Tool]:
+def tool(cls: type[Tool]) -> type[Tool]:
     """
     Marks a Tool so it can be automatically discovered.
     """
