@@ -30,7 +30,7 @@ from rich.theme import Theme
 
 from dan.core.config import DANConfig
 from dan.core.tool_registry import ToolRegistry
-from dan.core.router import Router
+from dan.core.router import Layer, Router
 from dan.core.safety import check_command_safety, get_tool_danger_level, DANGEROUS, CAUTION
 from dan.memory.session import SessionMemory
 from dan.plugins.registry import PluginRegistry
@@ -230,10 +230,11 @@ async def cmd_serve(args: argparse.Namespace, config: DANConfig) -> None:
                                 })
 
                             if tool_steps_log:
-                                persona_text = await router._persona(msg, tool_steps_log)
-                                if persona_text:
-                                    result["text"] = persona_text
-                                    session.add_assistant(persona_text)
+                                if route.layer == Layer.REASON:
+                                    persona_text = await router._persona(msg, tool_steps_log)
+                                    if persona_text:
+                                        result["text"] = persona_text
+                                        session.add_assistant(persona_text)
                             if tool_results:
                                 result["results"] = tool_results
 
@@ -413,18 +414,22 @@ async def cmd_interact(args: argparse.Namespace, config: DANConfig) -> None:
                             tool_instance = tool_class()
                             tool_result = await tool_instance.execute(**tool_args)
 
-                        # Route tool result through L3 persona
+                        # Route tool result through L3 persona (REASON layer only)
                         tool_steps = [{"type": "tool", "name": tool_name, "args": tool_args, "result": tool_result.message}]
-                        persona_text = await router._persona(message, tool_steps)
-
-                        if persona_text:
-                            sys.stdout.write("\033[1;32mdan>\033[0m ")
-                            sys.stdout.flush()
-                            sys.stdout.write(persona_text)
-                            sys.stdout.write("\n")
-                            sys.stdout.flush()
-                            session.add_assistant(persona_text)
+                        if route.layer == Layer.REASON:
+                            persona_text = await router._persona(message, tool_steps)
+                            if persona_text:
+                                sys.stdout.write("\033[1;32mdan>\033[0m ")
+                                sys.stdout.flush()
+                                sys.stdout.write(persona_text)
+                                sys.stdout.write("\n")
+                                sys.stdout.flush()
+                                session.add_assistant(persona_text)
+                            else:
+                                console.print(f"\033[1;32mdan>\033[0m {tool_result.message}")
+                                session.add_assistant(tool_result.message)
                         else:
+                            # L0/L1: show tool output directly, no L3
                             console.print(f"\033[1;32mdan>\033[0m {tool_result.message}")
                             session.add_assistant(tool_result.message)
 
