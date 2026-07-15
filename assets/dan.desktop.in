@@ -1,9 +1,9 @@
 [Desktop Entry]
 Name=D.A.N.
 Comment=Distributed Assistant Neural-network - Agentic Execution Framework
-Exec=env QT_QPA_PLATFORM=wayland /home/harjots/proyectos/dan/.venv/bin/dan-gui
-Icon=/home/harjots/proyectos/dan/icon/icon-dark.png
-Path=/home/harjots/proyectos/dan
+Exec=env QT_QPA_PLATFORM=wayland @VENV_BIN@/dan-gui
+Icon=@DAN_DIR@/icon/icon-dark.png
+Path=@DAN_DIR@
 Terminal=false
 Type=Application
 Categories=Utility;AI;Assistant;

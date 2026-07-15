@@ -4,6 +4,7 @@ set -euo pipefail
 DAN_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$DAN_DIR/.venv"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dan"
+LOCAL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/dan"
 
 print_bold() { printf "\033[1m%s\033[0m\n" "$*"; }
 print_green() { printf "\033[32m%s\033[0m\n" "$*"; }
@@ -113,7 +114,7 @@ fi
 if [[ ! -f "$CONFIG_DIR/config.yaml" ]]; then
     print_bold "Creating default configuration at $CONFIG_DIR/config.yaml..."
     mkdir -p "$CONFIG_DIR"
-    cat > "$CONFIG_DIR/config.yaml" << 'CONF'
+    cat > "$CONFIG_DIR/config.yaml" << CONF
 core:
   threshold: 0.5
   log_level: warning
@@ -138,16 +139,32 @@ persona:
 
 memory:
   short_term_limit: 10
-  long_term_path: ~/.local/share/dan/memory
+  long_term_path: $LOCAL_DIR/memory
 
 skills:
-  store_path: ~/.config/dan/skills.json
+  store_path: $HOME/.config/dan/skills.json
   min_executions: 3
   min_confidence: 0.7
 CONF
     print_green "✓ Default config created"
 else
     print_green "✓ Config already exists at $CONFIG_DIR/config.yaml"
+fi
+
+# Generate desktop entry from template
+DESKTOP_TEMPLATE="$DAN_DIR/assets/dan.desktop.in"
+DESKTOP_OUT="$CONFIG_DIR/dan.desktop"
+if [[ -f "$DESKTOP_TEMPLATE" ]]; then
+    print_bold "Generating desktop entry..."
+    mkdir -p "$CONFIG_DIR"
+    sed \
+        -e "s|@VENV_BIN@|$VENV_DIR/bin|g" \
+        -e "s|@DAN_DIR@|$DAN_DIR|g" \
+        "$DESKTOP_TEMPLATE" > "$DESKTOP_OUT"
+    print_green "✓ Desktop entry created at $DESKTOP_OUT"
+    echo "  Install system-wide with:"
+    echo "    cp $DESKTOP_OUT ~/.local/share/applications/dan.desktop"
+    echo "    update-desktop-database ~/.local/share/applications"
 fi
 
 echo

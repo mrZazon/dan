@@ -188,4 +188,4 @@ class DANConfig:
     def ensure_dirs(self) -> None:
         """Create required directories."""
         for path_str in [self.memory.long_term_path, self.skills.store_path]:
-            Path(path_str).mkdir(parents=True, exist_ok=True)
+            Path(path_str).expanduser().mkdir(parents=True, exist_ok=True)

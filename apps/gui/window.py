@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 import uuid
 
+from pathlib import Path
+
 from PyQt6.QtCore import QProcess, QSettings, QTimer
 from PyQt6.QtGui import QAction, QIcon, QKeySequence
 from PyQt6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout, QWidget
@@ -44,7 +46,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("D.A.N.")
         self.setMinimumSize(800, 500)
         self.resize(1200, 750)
-        self.setWindowIcon(QIcon("/home/harjots/proyectos/dan/icon/icon-dark.png"))
+        icon_path = str(Path(__file__).resolve().parents[2] / "icon" / "icon-dark.png")
+        self.setWindowIcon(QIcon(icon_path))
 
         self._setup_ui()
         self._setup_shortcuts()

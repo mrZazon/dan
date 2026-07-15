@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
@@ -46,7 +48,8 @@ class EmptyState(QWidget):
 
         layout.addStretch()
 
-        pixmap = QPixmap("/home/harjots/proyectos/dan/icon/icon-dark.png")
+        icon_path = str(Path(__file__).resolve().parents[3] / "icon" / "icon-dark.png")
+        pixmap = QPixmap(icon_path)
         logo = QLabel()
         logo.setPixmap(
             pixmap.scaled(
