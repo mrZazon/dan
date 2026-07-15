@@ -3,9 +3,11 @@ from __future__ import annotations
 import time
 import uuid
 
-from PyQt6.QtCore import QSettings, QTimer
-from PyQt6.QtGui import QAction, QKeySequence, QIcon
+from PyQt6.QtCore import QProcess, QSettings, QTimer
+from PyQt6.QtGui import QAction, QIcon, QKeySequence
 from PyQt6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout, QWidget
+
+from dan.memory.chats import ChatStore
 
 from .backend.client import DANClient
 from .backend.worker import BackendWorker
@@ -31,22 +33,25 @@ class MainWindow(QMainWindow):
         self._theme_manager = ThemeManager(self)
         self._client = DANClient()
         self._worker = BackendWorker(self._client, self)
+        self._server_process: QProcess | None = None
         self._send_time = 0.0
 
         self._conversations: list[dict] = []
         self._current_conv: dict | None = None
         self._chat_counter = 0
+        self._chat_store = ChatStore()
 
         self.setWindowTitle("D.A.N.")
         self.setMinimumSize(800, 500)
         self.resize(1200, 750)
-        self.setWindowIcon(QIcon("icon/icon-dark.png"))
+        self.setWindowIcon(QIcon("/home/harjots/proyectos/dan/icon/icon-dark.png"))
 
         self._setup_ui()
         self._setup_shortcuts()
         self._connect_signals()
 
         self._apply_settings()
+        self._load_conversations()
 
         QTimer.singleShot(500, self._initial_connect)
 
@@ -117,6 +122,22 @@ class MainWindow(QMainWindow):
 
         self._theme_manager.theme_changed.connect(self._reapply_theme)
 
+    def _load_conversations(self) -> None:
+        saved = self._chat_store.conversations
+        self._conversations.clear()
+        self._sidebar.clear_recent_chats()
+        max_num = 0
+        for conv in saved:
+            self._conversations.append(conv)
+            self._sidebar.add_recent_chat(conv.get("title", "Chat"))
+            title = conv.get("title", "")
+            if title.startswith("Chat ") and title[5:].isdigit():
+                max_num = max(max_num, int(title[5:]))
+        self._chat_counter = max_num
+        if self._conversations:
+            self._on_chat_selected(0)
+            self._sidebar.collapse()
+
     def _create_conversation(self) -> dict:
         self._chat_counter += 1
         conv_id = str(uuid.uuid4())[:8]
@@ -124,6 +145,7 @@ class MainWindow(QMainWindow):
         conv = {"id": conv_id, "title": title, "messages": []}
         self._conversations.append(conv)
         self._sidebar.add_recent_chat(title)
+        self._chat_store.add(conv)
         self._current_conv = conv
         self._client.new_conversation()
         return conv
@@ -164,8 +186,39 @@ class MainWindow(QMainWindow):
         self._status_bar.reload_theme(mode)
         self._inspector.reload_theme(mode)
 
+    def _kill_existing_server(self) -> None:
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", "apps.cli.main serve"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                pids = result.stdout.strip().splitlines()
+                for pid in pids:
+                    subprocess.run(["kill", pid], capture_output=True, timeout=3)
+                import time
+                time.sleep(1)
+        except Exception:
+            pass
+
+    def _start_server(self) -> None:
+        import sys
+        proc = QProcess(self)
+        proc.setProgram(sys.executable)
+        proc.setArguments(["-m", "apps.cli.main", "serve"])
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.ForwardedChannels)
+        proc.start()
+        self._server_process = proc
+
     def _initial_connect(self) -> None:
         self._status_bar.set_value("state", "Connecting")
+        self._kill_existing_server()
+        self._inspector.set_value("backend", "Connection", "Starting server...")
+        self._start_server()
+        QTimer.singleShot(3000, self._retry_connect)
+
+    def _retry_connect(self) -> None:
         ok = self._worker.check_connection()
         if ok:
             self._inspector.set_value("backend", "Connection", "Online")
@@ -180,7 +233,9 @@ class MainWindow(QMainWindow):
         if self._current_conv is None:
             self._create_conversation()
 
-        self._current_conv["messages"].append({"type": "user", "text": message})
+        msg = {"type": "user", "text": message}
+        self._current_conv["messages"].append(msg)
+        self._chat_store.add_message(self._current_conv["id"], msg)
         self._chat_area.add_user_message(message)
 
         turns = self._count_turns()
@@ -209,26 +264,30 @@ class MainWindow(QMainWindow):
             if step.get("type") == "tool":
                 name = step.get("name", "")
                 result = step.get("result", "")
-                self._current_conv["messages"].append(
-                    {"type": "tool", "name": name, "result": result}
-                )
+                msg = {"type": "tool", "name": name, "result": result}
+                self._current_conv["messages"].append(msg)
+                self._chat_store.add_message(self._current_conv["id"], msg)
                 self._chat_area.add_tool_result(name, result)
 
         for r in results:
             if r.get("type") == "tool":
-                self._current_conv["messages"].append(
-                    {"type": "tool", "name": r.get("name", ""), "result": r.get("result", "")}
-                )
+                msg = {"type": "tool", "name": r.get("name", ""), "result": r.get("result", "")}
+                self._current_conv["messages"].append(msg)
+                self._chat_store.add_message(self._current_conv["id"], msg)
                 self._chat_area.add_tool_result(
                     r.get("name", ""), r.get("result", "")
                 )
 
         if text:
-            self._current_conv["messages"].append({"type": "assistant", "text": text})
+            msg = {"type": "assistant", "text": text}
+            self._current_conv["messages"].append(msg)
+            self._chat_store.add_message(self._current_conv["id"], msg)
             self._chat_area.add_assistant_message(text)
         elif not results and not steps:
             fallback = "No response from backend."
-            self._current_conv["messages"].append({"type": "assistant", "text": fallback})
+            msg = {"type": "assistant", "text": fallback}
+            self._current_conv["messages"].append(msg)
+            self._chat_store.add_message(self._current_conv["id"], msg)
             self._chat_area.add_assistant_message(fallback)
 
         self._update_stats(elapsed)
@@ -240,9 +299,13 @@ class MainWindow(QMainWindow):
         self._inspector.set_value("context", "Tokens", f"~{turns * 128}")
         self._inspector.set_value("context", "Usage", f"{turns} messages")
 
-    def _on_error(self, msg: str) -> None:
+    def _on_error(self, error_msg: str) -> None:
         self._chat_area.hide_thinking()
-        self._chat_area.add_assistant_message(f"Error: {msg}")
+        self._chat_area.add_assistant_message(f"Error: {error_msg}")
+        if self._current_conv:
+            msg = {"type": "assistant", "text": f"Error: {error_msg}"}
+            self._current_conv["messages"].append(msg)
+            self._chat_store.add_message(self._current_conv["id"], msg)
         self._status_bar.set_value("state", "Error")
         self._status_bar.stop_pulse()
         self._input_area.set_enabled(True)
@@ -293,6 +356,7 @@ class MainWindow(QMainWindow):
         self._chat_area.clear()
         if self._current_conv:
             self._current_conv["messages"] = []
+            self._chat_store.update(self._current_conv["id"], messages=[])
         self._status_bar.set_value("state", "Idle")
         self._input_area.focus_input()
 
@@ -332,4 +396,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._client.disconnect()
+        self._chat_store.flush()
+        if self._server_process:
+            state = self._server_process.state()
+            if state != QProcess.ProcessState.NotRunning:
+                self._server_process.terminate()
+            if not self._server_process.waitForFinished(3000):
+                self._server_process.kill()
+                self._server_process.waitForFinished(2000)
         super().closeEvent(event)

@@ -11,6 +11,8 @@ from .window import MainWindow
 
 def main() -> None:
     app = QApplication(sys.argv)
+    app.setApplicationName("D.A.N.")
+    app.setDesktopFileName("dan")
 
     app.setFont(Font.mono(13))
     app.setStyle("Fusion")

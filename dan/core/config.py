@@ -36,7 +36,7 @@ class ProviderConfig:
 class CoreConfig:
     """Core framework configuration."""
 
-    threshold: float = 1.0
+    threshold: float = 0.7
     log_level: str = "INFO"
 
 

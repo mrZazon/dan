@@ -46,7 +46,7 @@ class EmptyState(QWidget):
 
         layout.addStretch()
 
-        pixmap = QPixmap("icon/icon-dark.png")
+        pixmap = QPixmap("/home/harjots/proyectos/dan/icon/icon-dark.png")
         logo = QLabel()
         logo.setPixmap(
             pixmap.scaled(

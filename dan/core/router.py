@@ -265,10 +265,18 @@ class Router:
             lines.append(f"  {cat}: {', '.join(names)}")
         return "\n".join(lines)
 
+    def _datetime_context(self) -> str:
+        from datetime import datetime
+        now = datetime.now()
+        return f"Current date and time: {now.strftime('%A, %d/%m/%Y at %H:%M:%S')}"
+
     def _session_context(self) -> str:
+        parts = [self._datetime_context()]
         if self.session:
-            return self.session.context_string(max_turns=6)
-        return ""
+            sess = self.session.context_string(max_turns=6)
+            if sess:
+                parts.append(sess)
+        return "\n\n".join(parts)
 
     async def _interpret(self, message: str) -> Route | None:
         if not self.interpret_provider:
@@ -353,6 +361,8 @@ class Router:
 
         from dan.providers.base import ProviderMessage
 
+        dt_ctx = self._datetime_context()
+
         if steps_log:
             # Build tool result context
             tool_lines = []
@@ -365,12 +375,18 @@ class Router:
             tool_context = "\n\n".join(tool_lines)
             prompt = (
                 f"[TOOL RESULT]\n"
+                f"{dt_ctx}\n"
                 f'User asked: "{message}"\n'
                 f"{tool_context}\n"
                 f"[END]"
             )
         else:
-            prompt = f'[CONVERSATION]\nUser: "{message}"\n[END]'
+            prompt = (
+                f"[CONVERSATION]\n"
+                f"{dt_ctx}\n"
+                f'User: "{message}"\n'
+                f"[END]"
+            )
 
         messages = [ProviderMessage(role="user", content=prompt)]
 
