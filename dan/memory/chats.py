@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,10 @@ class ChatStore:
         messages: list   — list of message dicts
         created_at: float — unix timestamp
         updated_at: float — unix timestamp
+
+    Each message has:
+        msg_id: str      — unique identifier (auto-generated if missing)
+        timestamp: float — unix timestamp (auto-set if missing)
     """
 
     def __init__(self, path: Path | None = None) -> None:
@@ -67,6 +72,11 @@ class ChatStore:
         conv = self.get(conv_id)
         if conv is None:
             return
+        msg.setdefault("msg_id", str(uuid.uuid4())[:8])
+        msg.setdefault("timestamp", time.time())
+        existing_ids = {m.get("msg_id") for m in conv.get("messages", [])}
+        if msg["msg_id"] in existing_ids:
+            return
         conv.setdefault("messages", []).append(msg)
         conv["updated_at"] = time.time()
         self._save()
@@ -86,6 +96,7 @@ class ChatStore:
             raw = self._path.read_text()
             data = json.loads(raw)
             self._conversations = data if isinstance(data, list) else []
+            self._conversations.sort(key=lambda c: c.get("updated_at", 0), reverse=True)
             logger.debug("Loaded %d conversations from %s", len(self._conversations), self._path)
         except Exception:
             logger.exception("Failed to load chats from %s", self._path)

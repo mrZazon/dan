@@ -4,13 +4,15 @@ Usage:
     dan [--config CONFIG] [--verbose] COMMAND [ARGS...]
 
 Commands:
-    run         Run a single command
-    interact    Start interactive mode
-    tools       List available tools
-    skills      List learned skills
-    plugins     List loaded plugins
-    config      Show current configuration
-    version     Show version information
+    run             Run a single command
+    interact        Start interactive mode
+    tools           List available tools
+    skills          List learned skills
+    plugins         List loaded plugins
+    config          Show current configuration
+    version         Show version information
+    serve           Start API server for GUI
+    close-servers   Stop all running D.A.N. server instances
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import struct
 import sys
 from pathlib import Path
@@ -531,6 +534,66 @@ def cmd_version(args: argparse.Namespace, config: DANConfig) -> None:
     console.print("[info]An open-source Agentic Execution Framework[/info]")
 
 
+def cmd_close_servers(args: argparse.Namespace, config: DANConfig) -> None:
+    """Stop all running D.A.N. server instances."""
+    import re
+    import signal
+    import subprocess
+    import time
+
+    found_pids: set[str] = set()
+
+    # Kill by process name match on "dan serve"
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "dan serve"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for pid in result.stdout.strip().splitlines():
+                pid = pid.strip()
+                if pid:
+                    found_pids.add(pid)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # Also find anything listening on the serve port
+    try:
+        port = getattr(args, "port", 7979)
+        result = subprocess.run(
+            ["ss", "-tlnp", f"sport = :{port}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            m = re.search(r"pid=(\d+)", line)
+            if m:
+                found_pids.add(m.group(1))
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    if not found_pids:
+        console.print("[info]No running servers found.[/info]")
+        return
+
+    for pid in sorted(found_pids):
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+            console.print(f"  [info]Sent SIGTERM to PID {pid}[/info]")
+        except ProcessLookupError:
+            continue
+
+    time.sleep(1)
+
+    for pid in sorted(found_pids):
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+            console.print(f"  [warning]Sent SIGKILL to PID {pid}[/warning]")
+        except ProcessLookupError:
+            continue
+
+    console.print("[success]All servers closed.[/success]")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="dan",
@@ -563,6 +626,9 @@ def parse_args() -> argparse.Namespace:
     serve_parser.add_argument("--host", default="127.0.0.1", help="Bind address")
     serve_parser.add_argument("--port", type=int, default=7979, help="Bind port")
 
+    close_parser = subparsers.add_parser("close-servers", help="Stop all running D.A.N. server instances")
+    close_parser.add_argument("--port", type=int, default=7979, help="Server port to check")
+
     return parser.parse_args()
 
 
@@ -580,6 +646,7 @@ def main() -> None:
         "config": cmd_config,
         "version": cmd_version,
         "serve": cmd_serve,
+        "close-servers": cmd_close_servers,
     }
 
     if not args.command:

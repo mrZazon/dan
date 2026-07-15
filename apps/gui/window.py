@@ -234,7 +234,6 @@ class MainWindow(QMainWindow):
             self._create_conversation()
 
         msg = {"type": "user", "text": message}
-        self._current_conv["messages"].append(msg)
         self._chat_store.add_message(self._current_conv["id"], msg)
         self._chat_area.add_user_message(message)
 
@@ -265,14 +264,12 @@ class MainWindow(QMainWindow):
                 name = step.get("name", "")
                 result = step.get("result", "")
                 msg = {"type": "tool", "name": name, "result": result}
-                self._current_conv["messages"].append(msg)
                 self._chat_store.add_message(self._current_conv["id"], msg)
                 self._chat_area.add_tool_result(name, result)
 
         for r in results:
             if r.get("type") == "tool":
                 msg = {"type": "tool", "name": r.get("name", ""), "result": r.get("result", "")}
-                self._current_conv["messages"].append(msg)
                 self._chat_store.add_message(self._current_conv["id"], msg)
                 self._chat_area.add_tool_result(
                     r.get("name", ""), r.get("result", "")
@@ -280,13 +277,11 @@ class MainWindow(QMainWindow):
 
         if text:
             msg = {"type": "assistant", "text": text}
-            self._current_conv["messages"].append(msg)
             self._chat_store.add_message(self._current_conv["id"], msg)
             self._chat_area.add_assistant_message(text)
         elif not results and not steps:
             fallback = "No response from backend."
             msg = {"type": "assistant", "text": fallback}
-            self._current_conv["messages"].append(msg)
             self._chat_store.add_message(self._current_conv["id"], msg)
             self._chat_area.add_assistant_message(fallback)
 
@@ -304,7 +299,6 @@ class MainWindow(QMainWindow):
         self._chat_area.add_assistant_message(f"Error: {error_msg}")
         if self._current_conv:
             msg = {"type": "assistant", "text": f"Error: {error_msg}"}
-            self._current_conv["messages"].append(msg)
             self._chat_store.add_message(self._current_conv["id"], msg)
         self._status_bar.set_value("state", "Error")
         self._status_bar.stop_pulse()
