@@ -39,6 +39,10 @@ browser = [
 gui = [
     "PyQt6>=6.6",
 ]
+gdrive = [
+    "google-api-python-client>=2.150",
+    "google-auth-oauthlib>=1.2",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -46,7 +50,7 @@ dev = [
     "mypy>=1.10",
 ]
 all = [
-    "dan[llm,browser,gui,dev]",
+    "dan[llm,browser,gui,gdrive,dev]",
 ]
 
 [project.scripts]

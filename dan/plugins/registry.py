@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import importlib
+import inspect
 import logging
+import pkgutil
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from dan.plugins.base import Plugin, PluginMetadata
 
 logger = logging.getLogger(__name__)
@@ -18,6 +23,41 @@ class PluginRegistry:
     def __init__(self) -> None:
         self._plugins: dict[str, Plugin] = {}
         self._initialized: dict[str, bool] = {}
+
+    def discover(self, packages: Sequence[str] | None = None) -> None:
+        """Discover plugins from the given packages.
+
+        Args:
+            packages: Module paths to scan. Defaults to ["dan.plugins"].
+        """
+        from dan.plugins.base import Plugin as PluginBase
+
+        if packages is None:
+            packages = ["dan.plugins"]
+
+        for pkg_path in packages:
+            try:
+                pkg = importlib.import_module(pkg_path)
+            except ImportError:
+                logger.warning("Cannot import package: %s", pkg_path)
+                continue
+
+            for _, module_name, _ in pkgutil.iter_modules(pkg.__path__):
+                if module_name.startswith("_") or module_name in ("base", "decorators", "registry"):
+                    continue
+
+                try:
+                    module = importlib.import_module(f"{pkg_path}.{module_name}")
+                except ImportError:
+                    logger.warning("Cannot import module: %s.%s", pkg_path, module_name)
+                    continue
+
+                for _, obj in inspect.getmembers(module, inspect.isclass):
+                    if not issubclass(obj, PluginBase) or obj is PluginBase:
+                        continue
+                    if not getattr(obj, "__dan_plugin__", False):
+                        continue
+                    self.register(obj())
 
     def register(self, plugin: Plugin) -> None:
         """Register a plugin."""

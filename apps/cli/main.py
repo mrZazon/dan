@@ -122,6 +122,11 @@ async def cmd_serve(args: argparse.Namespace, config: DANConfig) -> None:
 
     registry = ToolRegistry()
     registry.discover()
+
+    plugin_registry = PluginRegistry()
+    plugin_registry.discover()
+    await plugin_registry.initialize_all()
+
     skill_registry = SkillRegistry()
     session = SessionMemory()
 
@@ -295,6 +300,11 @@ async def cmd_interact(args: argparse.Namespace, config: DANConfig) -> None:
     registry = ToolRegistry()
     registry.discover()
 
+    plugin_registry = PluginRegistry()
+    plugin_registry.discover()
+    await plugin_registry.initialize_all()
+    n_plugins = len(plugin_registry.list_plugins())
+
     # Show loading status during model initialization
     with Status("[bold green]Connecting to Ollama...", console=console, spinner="dots") as status:
         interpret = OllamaProvider()
@@ -327,152 +337,156 @@ async def cmd_interact(args: argparse.Namespace, config: DANConfig) -> None:
     console.print(f"  [info]interpret[/info] {config.interpret.model}  "
                   f"[info]reason[/info] {config.reason.model}  "
                   f"[info]persona[/info] {config.persona.model}  "
-                  f"[info]tools[/info] {len(registry)}")
+                  f"[info]tools[/info] {len(registry)}  "
+                  f"[info]plugins[/info] {n_plugins}")
     console.print()
 
-    while True:
-        try:
-            if sys.stdin.isatty():
-                raw = input("\033[1;36myou>\033[0m ")
-            else:
-                raw = sys.stdin.readline()
-            if not raw:
+    try:
+        while True:
+            try:
+                if sys.stdin.isatty():
+                    raw = input("\033[1;36myou>\033[0m ")
+                else:
+                    raw = sys.stdin.readline()
+                if not raw:
+                    break
+                message = raw.strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n[info]Goodbye![/info]")
                 break
-            message = raw.strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print("\n[info]Goodbye![/info]")
-            break
 
-        if not message:
-            continue
-        if message.lower() in ("exit", "quit"):
-            console.print("[info]Goodbye![/info]")
-            break
+            if not message:
+                continue
+            if message.lower() in ("exit", "quit"):
+                console.print("[info]Goodbye![/info]")
+                break
 
-        session.add_user(message)
+            session.add_user(message)
 
-        # Detect if this needs the agentic loop (multi-step questions)
-        _AGENTIC_KEYWORDS = {
-            "what should i", "plan my", "organize", "daily", "today",
-            "what do i have", "what's on", "what am i doing", "my schedule",
-            "what's my routine", "what do i usually", "good morning",
-            "briefing", "start my day", "what's today",
-        }
-        use_agentic = any(kw in message.lower() for kw in _AGENTIC_KEYWORDS)
+            # Detect if this needs the agentic loop (multi-step questions)
+            _AGENTIC_KEYWORDS = {
+                "what should i", "plan my", "organize", "daily", "today",
+                "what do i have", "what's on", "what am i doing", "my schedule",
+                "what's my routine", "what do i usually", "good morning",
+                "briefing", "start my day", "what's today",
+            }
+            use_agentic = any(kw in message.lower() for kw in _AGENTIC_KEYWORDS)
 
-        try:
-            if use_agentic:
-                # Agentic loop — plan → execute → read → repeat
-                with Status("[bold yellow]Thinking...", console=console, spinner="dots") as status:
-                    steps_log = await router.route_agentic(message, max_steps=5)
+            try:
+                if use_agentic:
+                    # Agentic loop — plan → execute → read → repeat
+                    with Status("[bold yellow]Thinking...", console=console, spinner="dots") as status:
+                        steps_log = await router.route_agentic(message, max_steps=5)
 
-                if steps_log:
-                    # Show tool steps
-                    for step in steps_log:
-                        if step["type"] == "tool":
-                            console.print(f"  [dim]→ {step['name']}[/dim]")
-                    # Show final response
-                    last = steps_log[-1]
-                    if last["type"] == "response":
-                        sys.stdout.write("\033[1;32mdan>\033[0m ")
-                        sys.stdout.flush()
-                        sys.stdout.write(last["text"])
-                        sys.stdout.write("\n")
-                        sys.stdout.flush()
-                        session.add_assistant(last["text"])
+                    if steps_log:
+                        # Show tool steps
+                        for step in steps_log:
+                            if step["type"] == "tool":
+                                console.print(f"  [dim]→ {step['name']}[/dim]")
+                        # Show final response
+                        last = steps_log[-1]
+                        if last["type"] == "response":
+                            sys.stdout.write("\033[1;32mdan>\033[0m ")
+                            sys.stdout.flush()
+                            sys.stdout.write(last["text"])
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                            session.add_assistant(last["text"])
 
-            else:
-                # Single-shot routing
-                with Status("[bold yellow]Thinking...", console=console, spinner="dots") as status:
-                    route = await router.route(message)
+                else:
+                    # Single-shot routing
+                    with Status("[bold yellow]Thinking...", console=console, spinner="dots") as status:
+                        route = await router.route(message)
 
-                if route.tool_name:
-                    steps = route.steps if route.steps else [{"tool": route.tool_name, "args": route.args}]
+                    if route.tool_name:
+                        steps = route.steps if route.steps else [{"tool": route.tool_name, "args": route.args}]
 
-                    for i, step in enumerate(steps):
-                        tool_name = step["tool"]
-                        tool_args = step["args"]
+                        for i, step in enumerate(steps):
+                            tool_name = step["tool"]
+                            tool_args = step["args"]
 
-                        # Safety check
-                        danger = get_tool_danger_level(tool_name)
-                        if danger in (DANGEROUS, CAUTION):
-                            cmd_str = _extract_command_from_args(tool_name, tool_args)
-                            desc = f"{danger.upper()}: {tool_name}"
-                            if cmd_str:
-                                desc += f" → {cmd_str}"
-                            if not _confirm(f"[warning]{desc}. Execute?[/warning]"):
-                                console.print("[info]Cancelled.[/info]")
-                                break
-
-                        if tool_name == "command":
-                            cmd_str = tool_args.get("command", "")
-                            verdict = check_command_safety(cmd_str)
-                            if not verdict.safe:
-                                if not _confirm(f"[error]DESTRUCTIVE:[/error] {verdict.reason} ({cmd_str}). Execute?"):
+                            # Safety check
+                            danger = get_tool_danger_level(tool_name)
+                            if danger in (DANGEROUS, CAUTION):
+                                cmd_str = _extract_command_from_args(tool_name, tool_args)
+                                desc = f"{danger.upper()}: {tool_name}"
+                                if cmd_str:
+                                    desc += f" → {cmd_str}"
+                                if not _confirm(f"[warning]{desc}. Execute?[/warning]"):
                                     console.print("[info]Cancelled.[/info]")
                                     break
 
-                        with Status(f"[bold yellow]Running {tool_name}...", console=console, spinner="dots"):
-                            tool_class = registry.get(tool_name)
-                            tool_instance = tool_class()
-                            tool_result = await tool_instance.execute(**tool_args)
+                            if tool_name == "command":
+                                cmd_str = tool_args.get("command", "")
+                                verdict = check_command_safety(cmd_str)
+                                if not verdict.safe:
+                                    if not _confirm(f"[error]DESTRUCTIVE:[/error] {verdict.reason} ({cmd_str}). Execute?"):
+                                        console.print("[info]Cancelled.[/info]")
+                                        break
 
-                        # Route tool result through L3 persona (REASON layer only)
-                        tool_steps = [{"type": "tool", "name": tool_name, "args": tool_args, "result": tool_result.message}]
-                        if route.layer == Layer.REASON:
-                            persona_text = await router._persona(message, tool_steps)
-                            if persona_text:
-                                sys.stdout.write("\033[1;32mdan>\033[0m ")
-                                sys.stdout.flush()
-                                sys.stdout.write(persona_text)
-                                sys.stdout.write("\n")
-                                sys.stdout.flush()
-                                session.add_assistant(persona_text)
+                            with Status(f"[bold yellow]Running {tool_name}...", console=console, spinner="dots"):
+                                tool_class = registry.get(tool_name)
+                                tool_instance = tool_class()
+                                tool_result = await tool_instance.execute(**tool_args)
+
+                            # Route tool result through L3 persona (REASON layer only)
+                            tool_steps = [{"type": "tool", "name": tool_name, "args": tool_args, "result": tool_result.message}]
+                            if route.layer == Layer.REASON:
+                                persona_text = await router._persona(message, tool_steps)
+                                if persona_text:
+                                    sys.stdout.write("\033[1;32mdan>\033[0m ")
+                                    sys.stdout.flush()
+                                    sys.stdout.write(persona_text)
+                                    sys.stdout.write("\n")
+                                    sys.stdout.flush()
+                                    session.add_assistant(persona_text)
+                                else:
+                                    console.print(f"\033[1;32mdan>\033[0m {tool_result.message}")
+                                    session.add_assistant(tool_result.message)
                             else:
+                                # L0/L1: show tool output directly, no L3
                                 console.print(f"\033[1;32mdan>\033[0m {tool_result.message}")
                                 session.add_assistant(tool_result.message)
-                        else:
-                            # L0/L1: show tool output directly, no L3
-                            console.print(f"\033[1;32mdan>\033[0m {tool_result.message}")
-                            session.add_assistant(tool_result.message)
 
-                elif route.skill_name:
-                    console.print(f"[info]skill: {route.skill_name}[/info]")
+                    elif route.skill_name:
+                        console.print(f"[info]skill: {route.skill_name}[/info]")
 
-                elif route.needs_stream:
-                    # L3 persona handles conversation — stream from persona model
-                    sys.stdout.write("\033[1;32mdan>\033[0m ")
-                    sys.stdout.flush()
-                    prompt = f"[CONVERSATION]\nUser: \"{message}\"\n[END]"
-                    msgs = [ProviderMessage(role="user", content=prompt)]
-                    response_parts: list[str] = []
-                    try:
-                        async for chunk in persona.stream(
-                            msgs,
-                            temperature=0.5,
-                            max_tokens=256,
-                        ):
-                            sys.stdout.write(chunk)
-                            sys.stdout.flush()
-                            response_parts.append(chunk)
-                    except Exception as stream_err:
-                        logger.exception("Stream failed")
-                        console.print(f"\n[error]Stream error:[/error] {stream_err}")
-                    print()
-                    full_response = "".join(response_parts)
-                    if full_response.strip():
-                        session.add_assistant(full_response.strip())
+                    elif route.needs_stream:
+                        # L3 persona handles conversation — stream from persona model
+                        sys.stdout.write("\033[1;32mdan>\033[0m ")
+                        sys.stdout.flush()
+                        prompt = f"[CONVERSATION]\nUser: \"{message}\"\n[END]"
+                        msgs = [ProviderMessage(role="user", content=prompt)]
+                        response_parts: list[str] = []
+                        try:
+                            async for chunk in persona.stream(
+                                msgs,
+                                temperature=0.5,
+                                max_tokens=256,
+                            ):
+                                sys.stdout.write(chunk)
+                                sys.stdout.flush()
+                                response_parts.append(chunk)
+                        except Exception as stream_err:
+                            logger.exception("Stream failed")
+                            console.print(f"\n[error]Stream error:[/error] {stream_err}")
+                        print()
+                        full_response = "".join(response_parts)
+                        if full_response.strip():
+                            session.add_assistant(full_response.strip())
 
-                elif route.raw_response:
-                    console.print(f"\033[1;32mdan>\033[0m {route.raw_response}")
-                    session.add_assistant(route.raw_response)
+                    elif route.raw_response:
+                        console.print(f"\033[1;32mdan>\033[0m {route.raw_response}")
+                        session.add_assistant(route.raw_response)
 
-                else:
-                    console.print("[info]No tool found for that request.[/info]")
+                    else:
+                        console.print("[info]No tool found for that request.[/info]")
 
-        except Exception as e:
-            logger.exception("Error processing message")
-            console.print(f"[error]Error:[/error] {e}")
+            except Exception as e:
+                logger.exception("Error processing message")
+                console.print(f"[error]Error:[/error] {e}")
+    finally:
+        await plugin_registry.shutdown_all()
 
 
 def cmd_tools(args: argparse.Namespace, config: DANConfig) -> None:
@@ -505,13 +519,15 @@ def cmd_skills(args: argparse.Namespace, config: DANConfig) -> None:
 def cmd_plugins(args: argparse.Namespace, config: DANConfig) -> None:
     """List loaded plugins."""
     plugin_registry = PluginRegistry()
+    plugin_registry.discover()
     plugins = plugin_registry.list_plugins()
     if not plugins:
         console.print("[info]No plugins loaded.[/info]")
         return
     console.print(f"[tool]Plugins[/tool] ({len(plugins)})")
     for plugin in plugins:
-        console.print(f"  [yellow]●[/yellow] [tool]{plugin.name}[/tool] v{plugin.version}: {plugin.description}")
+        deps = f"  [info]deps[/info] {', '.join(plugin.dependencies)}" if plugin.dependencies else ""
+        console.print(f"  [yellow]●[/yellow] [tool]{plugin.name}[/tool] v{plugin.version}: {plugin.description}{deps}")
 
 
 def cmd_config(args: argparse.Namespace, config: DANConfig) -> None:
